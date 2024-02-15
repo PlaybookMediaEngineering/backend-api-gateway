@@ -1,0 +1,183 @@
+name: release artifacts
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+  id-token: write
+  packages: write
+
+env:
+  HELM_CHART_PATH: charts/api-gateway
+  DOCKER_IMAGE: docker.io/playbookmedia/api-gateway
+  GHCR_REGISTRY: ghcr.io/playbookmediaengineering
+  K8S_VERSION: "1.29.0"
+  HELM_VERSION: "3.8.1"
+  GO_VERSION: "1.21.x"
+  REPOSITORY: "backend-api-gateway"
+  OWNER: "PlaybookMediaEngineering"
+  CHARTS_DIRECTORY: "charts"
+  CHARTS_URL: "https://charts.melodiy.io"
+  HELM_PUBLISH_BRANCH: "gh-pages"
+
+jobs:
+  publish-artifacts:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            release_suffix: ubuntu
+          - os: macos-latest
+            release_suffix: macos
+        platform: [linux/amd64, linux/arm64, linux/arm64/v8, macos/x86_64]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Release and Branch Info
+        run: |
+          echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+          echo "GIT_BRANCH=${GITHUB_BASE_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_ENV
+
+      - name: Setup Tools
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Setup Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Set short git commit SHA
+        id: commit
+        uses: prompt/actions-commit-hash@v2
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{env.AWS_REGION}}
+      - name: Setup Helm
+        uses: ./.github/actions/helm
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Login to Docker Registries
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Prepare Artifact Information
+        run: |
+          VERSION=sha-${GITHUB_SHA::8}
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF/refs\/tags\//}
+          fi
+          HELM_VERSION=$(grep 'version:' ${{ env.HELM_CHART_PATH }}/Chart.yaml | tail -n1 | awk '{ print $2}')
+          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "REVISION=$GITHUB_SHA" >> $GITHUB_OUTPUT
+          echo "HELM_VERSION=$HELM_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Validate Service Helm Chart
+        uses: elifesciences/helm-validator-action@master
+        with:
+          chartPath: ${{ env.HELM_CHART_PATH }}
+          kubernetesVersion: ${{ env.K8S_VERSION }}
+
+      - name: Publish Helm Chart
+        uses: stefanprodan/helm-gh-pages@master
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          charts_dir: ${{ env.CHARTS_DIRECTORY }}
+          charts_url: ${{ env.CHARTS_URL }}
+          owner: ${{ env.OWNER }}
+          repository: ${{ env.REPOSITORY }}
+          branch: ${{ env.HELM_PUBLISH_BRANCH }}
+
+      - name: Publish Artifacts to GHCR
+        run: |
+          helm package ${{ env.HELM_CHART_PATH }}
+          helm push api-gateway-${{ steps.prep.outputs.HELM_VERSION }}.tgz oci://${{ env.GHCR_REGISTRY }}/charts
+          rm api-gateway-${{ steps.prep.outputs.HELM_VERSION }}.tgz
+        continue-on-error: true
+
+      - name: Generate Docker Image Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: type=raw,value=${{ steps.prep.outputs.VERSION }}
+
+      - name: Publish Multi-Arch Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          sbom: true
+          provenance: true
+          push: ${{ github.event_name != 'pull_request' }}
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: REVISION=${{ steps.prep.outputs.REVISION }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Build, tag, and push image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.commit.outputs.short }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+      - name: Debug Failure
+        if: failure()
+        run: kubectl logs -l app=api-gateway || true
+  deploy:
+    needs: [publish-artifacts]
+    runs-on: ubuntu-latest
+    env:
+      working-directory: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Update SHA
+        run: echo $GITHUB_SHA > $GITHUB_WORKSPACE/sha/_meta
+      - name: Update kube config
+        run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
+      - name: Deploy to EKS
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.commit.outputs.short }}
+        run: |
+          helm upgrade --install api-gateway ./charts/api-gateway --values ./charts/api-gateway/values.prod.yaml -n platform
+  release-golang:
+    needs: [publish-artifacts, deploy]
+    name: Update Tags
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: go-semantic-release/action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          changelog-file: CHANGELOG.md
+          update-file: pkg/version/version.go
+          force-bump-patch-version: true
+          changelog-generator-opt: "emojis=true"
