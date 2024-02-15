@@ -1,5 +1,6 @@
 name: release artifacts
 
+# release artifacts
 on:
   push:
     branches: main
