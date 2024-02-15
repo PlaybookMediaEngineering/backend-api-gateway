@@ -54,7 +54,7 @@ jobs:
         with:
           platforms: all
       - name: Lint helm chart
-        run: make lint-chart
+        run: make lint
       - name: Debug failure
         if: failure()
         run: |
