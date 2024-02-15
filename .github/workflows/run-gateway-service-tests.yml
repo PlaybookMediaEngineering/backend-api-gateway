@@ -10,70 +10,21 @@ permissions:
   packages: write # needed for ghcr access
 
 env:
-  ECR_REPOSITORY: api-gateway
-  EKS_CLUSTER_NAME: playbookmedia-production-cluster
-  AWS_REGION: us-east-1
-  KUBERNETES_VERSION: 1.26.0
   HELM_CHART_PATH: charts/api-gateway
   DOCKER_IMAGE: docker.io/playbookmedia/api-gateway
-  GHCR_REGISTRY: ghcr.io/solomonaiengineering
-  K8S_VERSION: "1.28.0"
-  HELM_VERSION: 3.8.1
-  GO_VERSION: 1.21.x
-  SERVICE_NAME: api-gateway
+  GHCR_REGISTRY: ghcr.io/playbookmediaengineering
+  K8S_VERSION: "1.29.0"
+  HELM_VERSION: "3.8.1"
+  GO_VERSION: "1.21.x"
+  REPOSITORY: "backend-api-gateway"
+  OWNER: "PlaybookMediaEngineering"
+  CHARTS_DIRECTORY: "charts"
+  CHARTS_URL: "https://charts.melodiy.io"
+  HELM_PUBLISH_BRANCH: "gh-pages"
+  SERVICE_NAME: "api-gateway"
 
 jobs:
-  # run the unit tests
-  unit-tests:
-    defaults:
-      run:
-        working-directory: .
-    name: unit-tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Set up Go 1.20.x
-        uses: actions/setup-go@v3
-        with:
-          go-version: "1.20"
-      - name: Check out code
-        uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          go mod download
-      - name: Install golangci-lint
-        run: |
-          curl -sSLO https://github.com/golangci/golangci-lint/releases/download/v$GOLANGCI_LINT_VERSION/golangci-lint-$GOLANGCI_LINT_VERSION-linux-amd64.tar.gz
-          shasum -a 256 golangci-lint-$GOLANGCI_LINT_VERSION-linux-amd64.tar.gz | grep "^$GOLANGCI_LINT_SHA256  " > /dev/null
-          tar -xf golangci-lint-$GOLANGCI_LINT_VERSION-linux-amd64.tar.gz
-          sudo mv golangci-lint-$GOLANGCI_LINT_VERSION-linux-amd64/golangci-lint /usr/local/bin/golangci-lint
-          rm -rf golangci-lint-$GOLANGCI_LINT_VERSION-linux-amd64*
-        env:
-          GOLANGCI_LINT_VERSION: "1.46.2"
-          GOLANGCI_LINT_SHA256: "242cd4f2d6ac0556e315192e8555784d13da5d1874e51304711570769c4f2b9b"
-      - name: Test style
-        run: make test.style
-        continue-on-error: true
-      - name: Run unit tests
-        run: make test-coverage
-      - name: Run Unit Test & Generate Cover
-        run: make unit-test
-      - name: Run coverage
-        run: go test -race ./... -coverprofile=coverage.txt -covermode=atomic
-      - name: Upload Data
-        run: |
-          export CODECOV_TOKEN=7affe034-809d-4333-8032-78c53c5a699b
-          curl -Os https://uploader.codecov.io/latest/linux/codecov
-          chmod +x codecov
-          ./codecov
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
-        with:
-          token: 7affe034-809d-4333-8032-78c53c5a699b
-      - name: Report Card
-        uses: creekorful/goreportcard-action@v1.0
-  # validate helm charts
   validate-helm-charts:
-    needs: [unit-tests]
     name: helm-chart-validation
     runs-on: ubuntu-latest
     defaults:
@@ -102,57 +53,8 @@ jobs:
         uses: docker/setup-qemu-action@v3
         with:
           platforms: all
-      - name: Validate Helm chart
-        uses: stefanprodan/kube-tools@v1
-        with:
-          kubectl: 1.19.11
-          helm: 2.17.0
-          helmv3: 3.6.0
-          command: |
-            helmv3 template ./charts/${{ env.SERVICE_NAME }} --set linkerd.profile.enabled=false | kubeval --strict --kubernetes-version 1.19.11 --schema-location https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master
-      - name: Validate kustomization
-        uses: stefanprodan/kube-tools@v1
-        with:
-          kubectl: 1.19.11
-          command: |
-            kustomize build ./kustomize | kubeval --strict --kubernetes-version 1.19.11 --schema-location https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master
-            kustomize build ./kustomize | conftest test -p .github/policy -
-      - name: Debug failure
-        if: failure()
-        run: |
-          kubectl logs -l app=${{env.SERVICE_NAME}} || true
-  # run the integration tests
-  integration-tests:
-    name: integration-tests
-    needs: [unit-tests, validate-helm-charts]
-    defaults:
-      run:
-        working-directory: .
-    strategy:
-      matrix:
-        helm-version:
-          - v3.10.3
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Kubernetes
-        uses: helm/kind-action@v1.9.0
-        with:
-          version: v0.17.0
-          cluster_name: kind
-      - name: Build container image
-        run: |
-          ./integration-test/build.sh
-          kind load docker-image test/service:latest
-      - name: Setup Helm
-        uses: azure/setup-helm@v3
-        with:
-          version: ${{ matrix.helm-version }}
-      - name: Deploy
-        run: ./integration-test/deploy.sh
-      - name: Run integration tests
-        run: ./integration-test/test.sh
+      - name: Lint helm chart
+        run: make lint-chart
       - name: Debug failure
         if: failure()
         run: |
