@@ -89,7 +89,7 @@ jobs:
           echo "REVISION=$GITHUB_SHA" >> $GITHUB_OUTPUT
           echo "HELM_VERSION=$HELM_VERSION" >> $GITHUB_OUTPUT
       - name: Validate Service Helm Chart
-        run: make lint-chart
+        run: make lint
       - name: Generate Docker Image Metadata
         id: meta
         uses: docker/metadata-action@v5
