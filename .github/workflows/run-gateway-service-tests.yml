@@ -53,6 +53,7 @@ jobs:
         uses: docker/setup-qemu-action@v3
         with:
           platforms: all
+      # lint helm chart
       - name: Lint helm chart
         run: make lint
       - name: Debug failure
