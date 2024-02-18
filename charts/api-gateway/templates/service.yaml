@@ -4,6 +4,10 @@ metadata:
   name: {{ include "api-gateway.fullname" . }}
   labels:
     {{- include "api-gateway.labels" . | nindent 4 }}
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
 spec:
   type: {{ .Values.service.type }}
   ports:
