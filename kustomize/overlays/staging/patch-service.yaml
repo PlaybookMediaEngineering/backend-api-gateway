@@ -10,6 +10,10 @@ metadata:
     app.kubernetes.io/instance: api-gateway
     app.kubernetes.io/version: "4.0.0"
     app.kubernetes.io/managed-by: Helm
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
 spec:
   type: NodePort
   ports:
